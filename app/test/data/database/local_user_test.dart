@@ -50,4 +50,31 @@ void main() {
     final user = (await db.select(db.users).get()).single;
     expect(user.dayStartHour, 4);
   });
+
+  test('the generated id is a UUIDv7, not v4', () async {
+    final id = await bootstrap.ensureLocalUser();
+
+    // Canonical 8-4-4-4-12 form; the version nibble is the first character of
+    // the third group, at index 14. Without this the suite would accept a v4
+    // id and silently violate the client-generated-UUIDv7 constraint.
+    expect(id, hasLength(36));
+    expect(id[14], '7');
+  });
+
+  test('timestamps round-trip to the current instant', () async {
+    final before = DateTime.now().toUtc();
+    await bootstrap.ensureLocalUser();
+    final after = DateTime.now().toUtc();
+
+    final user = (await db.select(db.users).get()).single;
+
+    // Compare instants, not `isUtc`: drift stores epoch seconds and reads back
+    // in local time, so `isUtc` is false on the way out even though the stored
+    // instant is correct. Second-granularity storage means the bounds need a
+    // second of slack on each side.
+    final created = user.createdAt.toUtc();
+    expect(created.isBefore(before.subtract(const Duration(seconds: 1))), isFalse);
+    expect(created.isAfter(after.add(const Duration(seconds: 1))), isFalse);
+    expect(user.updatedAt.toUtc(), created);
+  });
 }

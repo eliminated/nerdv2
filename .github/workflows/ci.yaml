@@ -27,16 +27,30 @@ jobs:
       - name: Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
-      # Two steps on purpose. The default shell here is pwsh, and GitHub only
-      # propagates the last command's exit code from a multi-line `run:`. Were
-      # these combined, a dump that failed outright would leave the checked-out
-      # JSON untouched, `git diff` would return 0, and the guard would pass
-      # green while verifying nothing.
+      # Four single-command steps on purpose. The default shell here is pwsh,
+      # and GitHub only propagates the last command's exit code from a
+      # multi-line `run:`. Combined, a dump that failed outright would leave the
+      # checked-out artifacts untouched, `git diff` would return 0, and the
+      # guard would pass green while verifying nothing.
       - name: Re-dump schema v1
         run: dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
 
-      - name: Verify schema dump is current
-        run: git diff --exit-code drift_schemas/
+      # The test's reference schema is built from schema_v1.dart, not from the
+      # JSON directly, so regenerating it is what verifies the artifact the test
+      # actually reads.
+      - name: Regenerate migration helpers
+        run: dart run drift_dev schema generate drift_schemas/ test/generated_migrations/
+
+      # --intent-to-add is load-bearing. `git diff` only reports tracked paths,
+      # and a schemaVersion bump makes the dump land in a NEW file
+      # (drift_schema_v2.json), leaving v1 byte-identical. Without this, that
+      # untracked file is invisible and the guard passes green on an undeclared
+      # schema change.
+      - name: Stage schema artifacts
+        run: git add --intent-to-add drift_schemas/ test/generated_migrations/
+
+      - name: Verify schema artifacts are current
+        run: git diff --exit-code drift_schemas/ test/generated_migrations/
 
       - name: Analyze
         run: flutter analyze

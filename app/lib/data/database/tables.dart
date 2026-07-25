@@ -19,7 +19,9 @@ mixin SyncColumns on Table {
 /// NULL -> NOT NULL would be a destructive migration.
 @DataClassName('UserRow')
 class Users extends Table with SyncColumns {
-  TextColumn get email => text().nullable()();
+  // UNIQUE per data-model.md §3.1. SQLite permits multiple NULLs in a unique
+  // column, so the single credential-less local user is unaffected.
+  TextColumn get email => text().nullable().unique()();
   TextColumn get passwordHash => text().nullable()();
   TextColumn get displayName => text().nullable()();
   TextColumn get timezone => text().withDefault(const Constant('UTC'))();
@@ -73,7 +75,7 @@ class Topics extends Table with SyncColumns {
 class Sessions extends Table with SyncColumns {
   TextColumn get userId => text().references(Users, #id)();
   TextColumn get subjectId => text().references(Subjects, #id)();
-  TextColumn get topicId => text().nullable()();
+  TextColumn get topicId => text().nullable().references(Topics, #id)();
   TextColumn get goalId => text().nullable()();
 
   /// 'plain' | 'focused' | 'ultra_focus'

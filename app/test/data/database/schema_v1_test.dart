@@ -73,6 +73,17 @@ void main() {
     expect(rows.single.read<int>('foreign_keys'), 1);
   });
 
+  /// Matches a specific SQLite constraint failure. A bare `isA<Exception>()`
+  /// would also pass for a typo in a column name, so the test would keep
+  /// passing while silently testing nothing.
+  Matcher throwsConstraint(String constraint) => throwsA(
+    isA<Exception>().having(
+      (Exception e) => e.toString(),
+      'message',
+      contains(constraint),
+    ),
+  );
+
   test('a subject rejects a dangling user_id', () async {
     await expectLater(
       db.customStatement(
@@ -80,7 +91,45 @@ void main() {
         'created_at, updated_at, sync_state) '
         "VALUES ('s1', 'nope', 'Maths', 'self', 0, 0, 0, 'local')",
       ),
-      throwsA(isA<Exception>()),
+      throwsConstraint('FOREIGN KEY'),
+    );
+  });
+
+  test('a session rejects a dangling topic_id', () async {
+    await db.customStatement(
+      'INSERT INTO users (id, timezone, day_start_hour, created_at, '
+      "updated_at, sync_state) VALUES ('u1', 'UTC', 4, 0, 0, 'local')",
+    );
+    await db.customStatement(
+      'INSERT INTO subjects (id, user_id, name, source, archived, '
+      'created_at, updated_at, sync_state) '
+      "VALUES ('s1', 'u1', 'Maths', 'self', 0, 0, 0, 'local')",
+    );
+
+    await expectLater(
+      db.customStatement(
+        'INSERT INTO sessions (id, user_id, subject_id, topic_id, mode, '
+        'paused_duration_s, started_at, created_at, updated_at, sync_state) '
+        "VALUES ('x1', 'u1', 's1', 'nope', 'plain', 0, 0, 0, 0, 'local')",
+      ),
+      throwsConstraint('FOREIGN KEY'),
+    );
+  });
+
+  test('duplicate non-null emails are rejected', () async {
+    await db.customStatement(
+      'INSERT INTO users (id, email, timezone, day_start_hour, created_at, '
+      'updated_at, sync_state) '
+      "VALUES ('u1', 'a@b.c', 'UTC', 4, 0, 0, 'local')",
+    );
+
+    await expectLater(
+      db.customStatement(
+        'INSERT INTO users (id, email, timezone, day_start_hour, created_at, '
+        'updated_at, sync_state) '
+        "VALUES ('u2', 'a@b.c', 'UTC', 4, 0, 0, 'local')",
+      ),
+      throwsConstraint('UNIQUE'),
     );
   });
 }

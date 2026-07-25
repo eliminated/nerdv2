@@ -34,6 +34,16 @@ Record these; Task 9 annotates the source document.
 | `sessions.goal_id REFERENCES goals(id)` | Plain nullable text, no FK | The `goals` table does not exist until Phase 6. Adding it later is additive. |
 | `topics.parent_topic_id REFERENCES topics(id)` | Plain nullable text, no FK | Avoids a self-referential FK in generated code. Tree integrity is enforced in Phase 4. |
 
+**Correction applied after the Task 3 review (2026-07-25).** An earlier draft of this plan also
+omitted `sessions.topic_id REFERENCES topics(id)` and the `UNIQUE` on `users.email`, without
+listing either as a deviation. Both are now **included**, matching
+[data-model.md](../../data-model.md) §3.1 and §3.4. The `topic_id` FK in particular could not
+be deferred: SQLite cannot add a foreign key to an existing table, so leaving it out until
+after the v1 freeze would have required exactly the destructive create-copy-drop-rename
+rebuild that §5's additive-only law exists to prevent. Because every delete in this model is
+soft (`deleted_at`), the FK can never block a deletion — it only rejects a session pointing at
+a topic that never existed.
+
 ---
 
 ## File Structure
@@ -350,6 +360,17 @@ void main() {
     expect(rows.single.read<int>('foreign_keys'), 1);
   });
 
+  /// Matches a specific SQLite constraint failure. A bare `isA<Exception>()`
+  /// would also pass for a typo in a column name, so the test would keep
+  /// passing while silently testing nothing.
+  Matcher throwsConstraint(String constraint) => throwsA(
+        isA<Exception>().having(
+          (Exception e) => e.toString(),
+          'message',
+          contains(constraint),
+        ),
+      );
+
   test('a subject rejects a dangling user_id', () async {
     await expectLater(
       db.customStatement(
@@ -357,7 +378,45 @@ void main() {
         "created_at, updated_at, sync_state) "
         "VALUES ('s1', 'nope', 'Maths', 'self', 0, 0, 0, 'local')",
       ),
-      throwsA(isA<Exception>()),
+      throwsConstraint('FOREIGN KEY'),
+    );
+  });
+
+  test('a session rejects a dangling topic_id', () async {
+    await db.customStatement(
+      "INSERT INTO users (id, timezone, day_start_hour, created_at, "
+      "updated_at, sync_state) VALUES ('u1', 'UTC', 4, 0, 0, 'local')",
+    );
+    await db.customStatement(
+      "INSERT INTO subjects (id, user_id, name, source, archived, "
+      "created_at, updated_at, sync_state) "
+      "VALUES ('s1', 'u1', 'Maths', 'self', 0, 0, 0, 'local')",
+    );
+
+    await expectLater(
+      db.customStatement(
+        "INSERT INTO sessions (id, user_id, subject_id, topic_id, mode, "
+        "paused_duration_s, started_at, created_at, updated_at, sync_state) "
+        "VALUES ('x1', 'u1', 's1', 'nope', 'plain', 0, 0, 0, 0, 'local')",
+      ),
+      throwsConstraint('FOREIGN KEY'),
+    );
+  });
+
+  test('duplicate non-null emails are rejected', () async {
+    await db.customStatement(
+      "INSERT INTO users (id, email, timezone, day_start_hour, created_at, "
+      "updated_at, sync_state) "
+      "VALUES ('u1', 'a@b.c', 'UTC', 4, 0, 0, 'local')",
+    );
+
+    await expectLater(
+      db.customStatement(
+        "INSERT INTO users (id, email, timezone, day_start_hour, created_at, "
+        "updated_at, sync_state) "
+        "VALUES ('u2', 'a@b.c', 'UTC', 4, 0, 0, 'local')",
+      ),
+      throwsConstraint('UNIQUE'),
     );
   });
 }
@@ -396,7 +455,9 @@ mixin SyncColumns on Table {
 /// NULL -> NOT NULL would be a destructive migration.
 @DataClassName('UserRow')
 class Users extends Table with SyncColumns {
-  TextColumn get email => text().nullable()();
+  // UNIQUE per data-model.md §3.1. SQLite permits multiple NULLs in a unique
+  // column, so the single credential-less local user is unaffected.
+  TextColumn get email => text().nullable().unique()();
   TextColumn get passwordHash => text().nullable()();
   TextColumn get displayName => text().nullable()();
   TextColumn get timezone => text().withDefault(const Constant('UTC'))();
@@ -451,7 +512,7 @@ class Topics extends Table with SyncColumns {
 class Sessions extends Table with SyncColumns {
   TextColumn get userId => text().references(Users, #id)();
   TextColumn get subjectId => text().references(Subjects, #id)();
-  TextColumn get topicId => text().nullable()();
+  TextColumn get topicId => text().nullable().references(Topics, #id)();
   TextColumn get goalId => text().nullable()();
 
   /// 'plain' | 'focused' | 'ultra_focus'
@@ -589,7 +650,7 @@ Expected: writes `lib/data/database/database.g.dart`, `Succeeded after ...`.
 ```bash
 cd app && flutter test test/data/database/schema_v1_test.dart
 ```
-Expected: PASS, 5 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 7: Commit**
 
@@ -1492,7 +1553,7 @@ rm app/test/widget_test.dart
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: `No issues found!`, then all tests pass — 21 total (5 schema, 1 migration, 4 local
+Expected: `No issues found!`, then all tests pass — 23 total (7 schema, 1 migration, 4 local
 user, 2 domain, 6 repository, 3 widget).
 
 - [ ] **Step 8: Verify persistence by hand — Phase 0 exit criterion 2**
@@ -1718,7 +1779,7 @@ Add `import 'dart:io';` at the top of the file.
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: clean, all tests pass — 24 total (21 from Task 7, plus 3 backup tests).
+Expected: clean, all tests pass — 26 total (23 from Task 7, plus 3 backup tests).
 
 On Windows the `tearDown` deletes the temp directory immediately after closing the database.
 If a test fails with a file-lock error, the close did not complete — check that every

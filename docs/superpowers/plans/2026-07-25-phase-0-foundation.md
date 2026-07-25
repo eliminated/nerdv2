@@ -20,7 +20,9 @@ Every task's requirements implicitly include this section.
   / meta ≥1.18, which Flutter 3.41.4 forbids. `drift 2.34.0` + `drift_dev 2.34.0` is the only
   working pair. Note the `build_runner` builder path works fine at 2.34.2 — only the schema CLI
   breaks — so a green codegen run does **not** prove the tooling is intact. This pin must be
-  lifted in the same change as any future Flutter upgrade.
+  lifted in the same change as any future Flutter upgrade. **Pin `drift_dev` to exactly `2.34.0`
+  too** — `drift_dev 2.34.1+1` still allows `drift >=2.30.0 <2.35.0`, so pub is otherwise free to
+  pair a newer `drift_dev` with the pinned `drift`. The two move together or not at all.
 - **Dart package name:** `nerdyapp`. All Flutter code lives in `app/`.
 - **The domain layer imports neither Flutter nor Drift.** No `package:flutter/*`, no `package:drift/*` in `lib/domain/`.
 - **All primary keys are UUIDv7 strings**, generated client-side via `const Uuid().v7()`. Never database-generated.
@@ -718,9 +720,12 @@ void main() {
   });
 
   // `migrateAndValidate` builds its reference schema by instantiating
-  // `GeneratedHelper` at the target version — i.e. from the committed
-  // drift_schemas/drift_schema_v1.json — and compares it against the schema it
-  // reads out of `sqlite_master` for the database it is handed.
+  // `GeneratedHelper` at the target version. That reference comes from
+  // test/generated_migrations/schema_v1.dart, which `drift_dev schema generate`
+  // derives from the committed drift_schemas/drift_schema_v1.json — the JSON is
+  // NOT read directly here, so the two artifacts must always be regenerated
+  // together. It compares that reference against the schema it reads out of
+  // `sqlite_master` for the database it is handed.
   //
   // The database therefore MUST be empty. An empty database opens with
   // user_version 0, so drift runs `onCreate` -> `createAll()`, building the
@@ -731,17 +736,30 @@ void main() {
   // from the snapshot, drift would run no migration (stored version already
   // equals the target), and both sides of the comparison would come from the
   // snapshot — the test would pass no matter how far tables.dart had drifted.
+  // `validateDropped: true` is REQUIRED, not optional hardening. It defaults to
+  // false, and find_differences.dart wires the *entity-level* comparison to it
+  // (`validateActualInReference: options.validateDropped`) while defaulting the
+  // *column-level* one to true. So with the default, an added COLUMN fails the
+  // test but an added TABLE or INDEX does not — precisely the change shape this
+  // project's additive-only migration law makes most likely.
   test(
     'a database created at v1 validates against the committed schema',
     () async {
       final db = AppDatabase(NativeDatabase.memory());
       addTearDown(db.close);
 
-      await verifier.migrateAndValidate(db, 1);
+      await verifier.migrateAndValidate(
+        db,
+        1,
+        options: const ValidationOptions(validateDropped: true),
+      );
     },
   );
 }
 ```
+
+`ValidationOptions` should come from `package:drift_dev/api/migrations_native.dart`; if that
+does not re-export it, import `package:drift_dev/api/migrations_common.dart` as well.
 
 > **This test was a tautology in an earlier draft of this plan**, and Step 5 is what exposed it.
 > The original used `verifier.startAt(1)` to build the database, which made
@@ -770,9 +788,14 @@ Then:
 ```bash
 cd app && dart run build_runner build --delete-conflicting-outputs
 cd app && dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
+cd app && git add --intent-to-add drift_schemas/
 cd app && git diff --stat drift_schemas/
 ```
 Expected: `drift_schema_v1.json` shows as modified — the guard works.
+
+The `git add --intent-to-add` is needed on a first run: until `drift_schemas/` is committed the
+files are untracked, and `git diff` reports nothing for untracked paths, so the probe would
+look like the guard had failed to fire.
 
 Now revert:
 
@@ -799,19 +822,40 @@ untouched, `git diff` would return 0, and the guard would pass green while verif
       - name: Re-dump schema v1
         run: dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
 
-      - name: Verify schema dump is current
-        run: git diff --exit-code drift_schemas/
+      - name: Regenerate migration helpers
+        run: dart run drift_dev schema generate drift_schemas/ test/generated_migrations/
+
+      # --intent-to-add is load-bearing. `git diff` only reports tracked paths,
+      # and a schemaVersion bump makes the dump land in a NEW file
+      # (drift_schema_v2.json), leaving v1 byte-identical. Without this, that
+      # untracked file is invisible and the guard passes green on an undeclared
+      # schema change.
+      - name: Stage schema artifacts
+        run: git add --intent-to-add drift_schemas/ test/generated_migrations/
+
+      - name: Verify schema artifacts are current
+        run: git diff --exit-code drift_schemas/ test/generated_migrations/
 ```
+
+Four single-command steps rather than one multi-line block: the default shell is `pwsh`, which
+propagates only the last command's exit code, so a combined block would let a failed dump pass
+green. `test/generated_migrations/` is checked as well as the JSON because the test's reference
+schema is built from `schema_v1.dart`, not from the JSON directly — checking only the JSON would
+leave the artifact the test actually reads unverified.
 
 - [ ] **Step 7: Commit and confirm CI stays green**
 
 ```bash
-git add app/drift_schemas app/test/generated_migrations app/test/data/database/migration_test.dart .github/workflows/ci.yaml
+git add app/drift_schemas app/test/generated_migrations app/test/data/database/migration_test.dart .github/workflows/ci.yaml app/pubspec.yaml app/pubspec.lock
 git commit -m "test: freeze schema v1 and detect schema drift in CI"
 git push
 gh run list --limit 1
 ```
 Expected: `completed  success`.
+
+`pubspec.yaml`/`pubspec.lock` are included because this task discovers the `drift 2.34.0` pin
+(see Global Constraints). Committing the pin separately, ahead of the harness, is better
+practice — the harness does not compile without it.
 
 **This satisfies Phase 0 exit criterion 3.**
 

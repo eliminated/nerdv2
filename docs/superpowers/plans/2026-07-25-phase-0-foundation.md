@@ -13,6 +13,14 @@
 Every task's requirements implicitly include this section.
 
 - **Flutter 3.41.4 stable / Dart 3.11.1.** CI pins the same Flutter version. Do not run `flutter upgrade`.
+- **`drift` is pinned to exactly `2.34.0`** (no caret), discovered necessary in Task 4. At drift
+  2.34.1+ the `drift3_preview` `GeneratedDatabase` no longer exposes `allSchemaEntities`, which
+  `drift_dev 2.34.0`'s `verifier_common.dart` calls — so **all `drift_dev schema` tooling fails
+  to compile**, taking the migration harness with it. `drift_dev`'s own fix requires analyzer 13
+  / meta ≥1.18, which Flutter 3.41.4 forbids. `drift 2.34.0` + `drift_dev 2.34.0` is the only
+  working pair. Note the `build_runner` builder path works fine at 2.34.2 — only the schema CLI
+  breaks — so a green codegen run does **not** prove the tooling is intact. This pin must be
+  lifted in the same change as any future Flutter upgrade.
 - **Dart package name:** `nerdyapp`. All Flutter code lives in `app/`.
 - **The domain layer imports neither Flutter nor Drift.** No `package:flutter/*`, no `package:drift/*` in `lib/domain/`.
 - **All primary keys are UUIDv7 strings**, generated client-side via `const Uuid().v7()`. Never database-generated.
@@ -695,6 +703,7 @@ Expected: creates `app/test/generated_migrations/schema.dart` and `schema_v1.dar
 `app/test/data/database/migration_test.dart`:
 
 ```dart
+import 'package:drift/native.dart';
 import 'package:drift_dev/api/migrations_native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nerdyapp/data/database/database.dart';
@@ -708,16 +717,38 @@ void main() {
     verifier = SchemaVerifier(GeneratedHelper());
   });
 
-  test('a database created at v1 validates against the committed schema',
-      () async {
-    final connection = await verifier.startAt(1);
-    final db = AppDatabase(connection);
-    addTearDown(db.close);
+  // `migrateAndValidate` builds its reference schema by instantiating
+  // `GeneratedHelper` at the target version — i.e. from the committed
+  // drift_schemas/drift_schema_v1.json — and compares it against the schema it
+  // reads out of `sqlite_master` for the database it is handed.
+  //
+  // The database therefore MUST be empty. An empty database opens with
+  // user_version 0, so drift runs `onCreate` -> `createAll()`, building the
+  // tables from the live generated code. That is the comparison we want:
+  // tables.dart against the committed snapshot.
+  //
+  // Do NOT seed it from `verifier.startAt(1)`. That would pre-create the tables
+  // from the snapshot, drift would run no migration (stored version already
+  // equals the target), and both sides of the comparison would come from the
+  // snapshot — the test would pass no matter how far tables.dart had drifted.
+  test(
+    'a database created at v1 validates against the committed schema',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
 
-    await verifier.migrateAndValidate(db, 1);
-  });
+      await verifier.migrateAndValidate(db, 1);
+    },
+  );
 }
 ```
+
+> **This test was a tautology in an earlier draft of this plan**, and Step 5 is what exposed it.
+> The original used `verifier.startAt(1)` to build the database, which made
+> `migrateAndValidate` compare the committed snapshot against itself — `tables.dart` was never
+> consulted. With a spurious column added, it still reported "All tests passed". Requiring the
+> `drift` import of `package:drift/native.dart` is the only cost of the fix; the benefit is a
+> guard that can actually fail.
 
 - [ ] **Step 4: Run it to verify it passes**
 
@@ -759,13 +790,17 @@ Expected: exit code 0, no output.
 
 - [ ] **Step 6: Add the drift check to CI**
 
-Insert after the `Generate code` step in `.github/workflows/ci.yaml`:
+Insert after the `Generate code` step in `.github/workflows/ci.yaml`. **Two steps, not one** —
+the default shell is `pwsh`, and GitHub only propagates the *last* command's exit code from a
+multi-line `run:`. Combined, a dump that failed outright would leave the checked-out JSON
+untouched, `git diff` would return 0, and the guard would pass green while verifying nothing:
 
 ```yaml
+      - name: Re-dump schema v1
+        run: dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
+
       - name: Verify schema dump is current
-        run: |
-          dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
-          git diff --exit-code drift_schemas/
+        run: git diff --exit-code drift_schemas/
 ```
 
 - [ ] **Step 7: Commit and confirm CI stays green**

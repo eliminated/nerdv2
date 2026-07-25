@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nerdyapp/data/database/database.dart';
 import 'package:nerdyapp/data/database/local_user.dart';
 import 'package:nerdyapp/data/repositories/subject_repository_impl.dart';
+import 'package:nerdyapp/domain/entities/subject.dart';
 
 void main() {
   late AppDatabase db;
@@ -26,7 +27,11 @@ void main() {
   test('creates a subject with a generated id', () async {
     final created = await repository.create(userId: userId, name: 'Physics');
 
-    expect(created.id, isNotEmpty);
+    // Not merely isNotEmpty: that accepts a v4 id, a counter, or any string,
+    // leaving the client-generated-UUIDv7 constraint untested. Same assertions
+    // as local_user_test.dart, for the same reason.
+    expect(created.id, hasLength(36));
+    expect(created.id[14], '7');
     expect(created.name, 'Physics');
     expect(created.userId, userId);
     expect(created.source, 'self');
@@ -68,16 +73,24 @@ void main() {
     expect(await repository.activeSubjects(), isEmpty);
   });
 
-  test('watchActiveSubjects emits on insert', () async {
-    final emissions = <int>[];
-    final subscription = repository.watchActiveSubjects().listen(
-      (s) => emissions.add(s.length),
+  test('watchActiveSubjects emits the new subject after an insert', () async {
+    // `emitsThrough` subscribes immediately and waits for a matching event,
+    // ignoring earlier ones. That avoids both failure modes of a fixed
+    // `Future.delayed`: flaking under CI load if the emission is slow, and
+    // depending on whether drift's initial empty emission lands before or
+    // after the insert.
+    final expectation = expectLater(
+      repository.watchActiveSubjects(),
+      emitsThrough(
+        predicate<List<Subject>>(
+          (subjects) =>
+              subjects.length == 1 && subjects.single.name == 'Physics',
+          'exactly one subject named Physics',
+        ),
+      ),
     );
 
     await repository.create(userId: userId, name: 'Physics');
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-
-    await subscription.cancel();
-    expect(emissions.last, 1);
+    await expectation;
   });
 }

@@ -1,7 +1,7 @@
 import '../entities/subject.dart';
 
 abstract interface class SubjectRepository {
-  /// Live, archived, sorted by name.
+  /// Live subjects only — excludes soft-deleted and archived — sorted by name.
   Future<List<Subject>> activeSubjects();
 
   Stream<List<Subject>> watchActiveSubjects();

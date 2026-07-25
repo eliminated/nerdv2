@@ -26,9 +26,7 @@ class SubjectRepositoryImpl implements SubjectRepository {
 
   @override
   Stream<List<Subject>> watchActiveSubjects() {
-    return _activeQuery().watch().map(
-      (rows) => rows.map(_toEntity).toList(),
-    );
+    return _activeQuery().watch().map((rows) => rows.map(_toEntity).toList());
   }
 
   @override
@@ -49,17 +47,19 @@ class SubjectRepositoryImpl implements SubjectRepository {
       updatedAt: now,
     );
 
-    await _db.into(_db.subjects).insert(
-      SubjectsCompanion.insert(
-        id: subject.id,
-        userId: subject.userId,
-        name: subject.name,
-        color: Value(subject.color),
-        source: Value(subject.source),
-        createdAt: subject.createdAt,
-        updatedAt: subject.updatedAt,
-      ),
-    );
+    await _db
+        .into(_db.subjects)
+        .insert(
+          SubjectsCompanion.insert(
+            id: subject.id,
+            userId: subject.userId,
+            name: subject.name,
+            color: Value(subject.color),
+            source: Value(subject.source),
+            createdAt: subject.createdAt,
+            updatedAt: subject.updatedAt,
+          ),
+        );
 
     return subject;
   }

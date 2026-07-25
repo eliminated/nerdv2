@@ -37,8 +37,9 @@ void main() {
     await repository.create(userId: userId, name: 'Physics');
     await repository.create(userId: userId, name: 'Algebra');
 
-    final names =
-        (await repository.activeSubjects()).map((s) => s.name).toList();
+    final names = (await repository.activeSubjects())
+        .map((s) => s.name)
+        .toList();
     expect(names, <String>['Algebra', 'Physics']);
   });
 

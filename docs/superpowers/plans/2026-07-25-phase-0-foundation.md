@@ -1089,6 +1089,31 @@ void main() {
     expect(a.hashCode, b.hashCode);
   });
 
+  test('equality is by id alone, not by field values', () {
+    final now = DateTime.utc(2026, 7, 25);
+    final a = Subject(
+      id: 'x',
+      userId: 'u',
+      name: 'Maths',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final b = Subject(
+      id: 'x',
+      userId: 'u',
+      name: 'Physics', // deliberately different
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    // Without this case the suite cannot tell id-based equality from
+    // full-field equality: the previous test's two instances match on every
+    // field, so it passes under either implementation. A future change to
+    // value equality would slip through unnoticed.
+    expect(a, b);
+    expect(a.hashCode, b.hashCode);
+  });
+
   test('source defaults to self', () {
     final subject = Subject(
       id: 'x',
@@ -1161,7 +1186,7 @@ class Subject {
 import '../entities/subject.dart';
 
 abstract interface class SubjectRepository {
-  /// Live, archived, sorted by name.
+  /// Live subjects only — excludes soft-deleted and archived — sorted by name.
   Future<List<Subject>> activeSubjects();
 
   Stream<List<Subject>> watchActiveSubjects();
@@ -1185,6 +1210,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nerdyapp/data/database/database.dart';
 import 'package:nerdyapp/data/database/local_user.dart';
 import 'package:nerdyapp/data/repositories/subject_repository_impl.dart';
+import 'package:nerdyapp/domain/entities/subject.dart';
 
 void main() {
   late AppDatabase db;
@@ -1208,7 +1234,11 @@ void main() {
   test('creates a subject with a generated id', () async {
     final created = await repository.create(userId: userId, name: 'Physics');
 
-    expect(created.id, isNotEmpty);
+    // Not merely isNotEmpty: that accepts a v4 id, a counter, or any string,
+    // leaving the client-generated-UUIDv7 constraint untested. Same assertions
+    // as local_user_test.dart, for the same reason.
+    expect(created.id, hasLength(36));
+    expect(created.id[14], '7');
     expect(created.name, 'Physics');
     expect(created.userId, userId);
     expect(created.source, 'self');
@@ -1246,16 +1276,25 @@ void main() {
     expect(await repository.activeSubjects(), isEmpty);
   });
 
-  test('watchActiveSubjects emits on insert', () async {
-    final emissions = <int>[];
-    final subscription =
-        repository.watchActiveSubjects().listen((s) => emissions.add(s.length));
+  test('watchActiveSubjects emits the new subject after an insert', () async {
+    // `emitsThrough` subscribes immediately and waits for a matching event,
+    // ignoring earlier ones. That avoids both failure modes of a fixed
+    // `Future.delayed`: flaking under CI load if the emission is slow, and
+    // depending on whether drift's initial empty emission lands before or
+    // after the insert.
+    final expectation = expectLater(
+      repository.watchActiveSubjects(),
+      emitsThrough(
+        predicate<List<Subject>>(
+          (subjects) =>
+              subjects.length == 1 && subjects.single.name == 'Physics',
+          'exactly one subject named Physics',
+        ),
+      ),
+    );
 
     await repository.create(userId: userId, name: 'Physics');
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-
-    await subscription.cancel();
-    expect(emissions.last, 1);
+    await expectation;
   });
 }
 ```
@@ -1361,7 +1400,7 @@ generated — if the analyzer cannot resolve them, codegen has not run.
 ```bash
 cd app && flutter test test/data/repositories/subject_repository_test.dart test/domain/entities/subject_test.dart
 ```
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 9: Confirm the schema did not drift**
 
@@ -1672,8 +1711,8 @@ rm app/test/widget_test.dart
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: `No issues found!`, then all tests pass — 25 total (7 schema, 1 migration, 6 local
-user, 2 domain, 6 repository, 3 widget).
+Expected: `No issues found!`, then all tests pass — 26 total (7 schema, 1 migration, 6 local
+user, 3 domain, 6 repository, 3 widget).
 
 - [ ] **Step 8: Verify persistence by hand — Phase 0 exit criterion 2**
 
@@ -1898,7 +1937,7 @@ Add `import 'dart:io';` at the top of the file.
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: clean, all tests pass — 28 total (25 from Task 7, plus 3 backup tests).
+Expected: clean, all tests pass — 29 total (26 from Task 7, plus 3 backup tests).
 
 On Windows the `tearDown` deletes the temp directory immediately after closing the database.
 If a test fails with a file-lock error, the close did not complete — check that every

@@ -927,6 +927,33 @@ void main() {
     final user = (await db.select(db.users).get()).single;
     expect(user.dayStartHour, 4);
   });
+
+  test('the generated id is a UUIDv7, not v4', () async {
+    final id = await bootstrap.ensureLocalUser();
+
+    // Canonical 8-4-4-4-12 form; the version nibble is the first character of
+    // the third group, at index 14. Without this the suite would accept a v4
+    // id and silently violate the client-generated-UUIDv7 constraint.
+    expect(id, hasLength(36));
+    expect(id[14], '7');
+  });
+
+  test('timestamps round-trip to the current instant', () async {
+    final before = DateTime.now().toUtc();
+    await bootstrap.ensureLocalUser();
+    final after = DateTime.now().toUtc();
+
+    final user = (await db.select(db.users).get()).single;
+
+    // Compare instants, not `isUtc`: drift stores epoch seconds and reads back
+    // in local time, so `isUtc` is false on the way out even though the stored
+    // instant is correct. Second-granularity storage means the bounds need a
+    // second of slack on each side.
+    final created = user.createdAt.toUtc();
+    expect(created.isBefore(before.subtract(const Duration(seconds: 1))), isFalse);
+    expect(created.isAfter(after.add(const Duration(seconds: 1))), isFalse);
+    expect(user.updatedAt.toUtc(), created);
+  });
 }
 ```
 
@@ -942,7 +969,6 @@ Expected: FAIL — `Target of URI doesn't exist: '.../local_user.dart'`.
 `app/lib/data/database/local_user.dart`:
 
 ```dart
-import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
 import 'database.dart';
@@ -960,34 +986,51 @@ class LocalUserBootstrap {
   static const _uuid = Uuid();
 
   /// Returns the local user's id, creating the row if absent.
-  Future<String> ensureLocalUser() async {
-    final existing = await _db.select(_db.users).getSingleOrNull();
-    if (existing != null) {
-      return existing.id;
-    }
+  ///
+  /// Wrapped in a transaction because the read-then-insert is otherwise not
+  /// atomic: two concurrent callers could both see an empty table and each
+  /// insert a row, breaking the guarantee in this class's doc comment. The
+  /// `UNIQUE` on `users.email` is no backstop — SQLite permits multiple NULLs
+  /// and the local user has no email.
+  Future<String> ensureLocalUser() {
+    return _db.transaction(() async {
+      // Unconditional select is safe only because this table holds exactly one
+      // row by design. If two rows ever existed, `getSingleOrNull()` throws
+      // rather than silently picking one; failing loud is correct here.
+      final existing = await _db.select(_db.users).getSingleOrNull();
+      if (existing != null) {
+        return existing.id;
+      }
 
-    final now = DateTime.now().toUtc();
-    final id = _uuid.v7();
+      final now = DateTime.now().toUtc();
+      final id = _uuid.v7();
 
-    await _db.into(_db.users).insert(
-          UsersCompanion.insert(
-            id: id,
-            createdAt: now,
-            updatedAt: now,
-          ),
-        );
+      await _db.into(_db.users).insert(
+            UsersCompanion.insert(
+              id: id,
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
 
-    return id;
+      return id;
+    });
   }
 }
 ```
+
+> **On `.toUtc()`.** It documents intent but has no observable effect: Drift's default DateTime
+> storage is integer epoch seconds, and `DateTime.now()` and `DateTime.now().toUtc()` share the
+> same `millisecondsSinceEpoch`. Drift also reads values back as **local** time (`isUtc == false`),
+> so do not assert `isUtc` on a round-tripped column — that assertion fails. Compare instants
+> instead.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
 cd app && flutter test test/data/database/local_user_test.dart
 ```
-Expected: PASS, 4 tests.
+Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1629,7 +1672,7 @@ rm app/test/widget_test.dart
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: `No issues found!`, then all tests pass — 23 total (7 schema, 1 migration, 4 local
+Expected: `No issues found!`, then all tests pass — 25 total (7 schema, 1 migration, 6 local
 user, 2 domain, 6 repository, 3 widget).
 
 - [ ] **Step 8: Verify persistence by hand — Phase 0 exit criterion 2**
@@ -1855,7 +1898,7 @@ Add `import 'dart:io';` at the top of the file.
 cd app && flutter analyze
 cd app && flutter test
 ```
-Expected: clean, all tests pass — 26 total (23 from Task 7, plus 3 backup tests).
+Expected: clean, all tests pass — 28 total (25 from Task 7, plus 3 backup tests).
 
 On Windows the `tearDown` deletes the temp directory immediately after closing the database.
 If a test fails with a file-lock error, the close did not complete — check that every

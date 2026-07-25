@@ -813,10 +813,7 @@ Expected: exit code 0, no output.
 
 - [ ] **Step 6: Add the drift check to CI**
 
-Insert after the `Generate code` step in `.github/workflows/ci.yaml`. **Two steps, not one** —
-the default shell is `pwsh`, and GitHub only propagates the *last* command's exit code from a
-multi-line `run:`. Combined, a dump that failed outright would leave the checked-out JSON
-untouched, `git diff` would return 0, and the guard would pass green while verifying nothing:
+Insert after the `Generate code` step in `.github/workflows/ci.yaml`:
 
 ```yaml
       - name: Re-dump schema v1

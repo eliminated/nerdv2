@@ -5,3 +5,9 @@ AGENTS.md
 
 .env
 CLAUDE.md
+
+# Flutter / Dart
+app/build/
+app/.dart_tool/
+app/windows/flutter/ephemeral/
+*.g.dart

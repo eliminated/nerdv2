@@ -27,6 +27,17 @@ jobs:
       - name: Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # Two steps on purpose. The default shell here is pwsh, and GitHub only
+      # propagates the last command's exit code from a multi-line `run:`. Were
+      # these combined, a dump that failed outright would leave the checked-out
+      # JSON untouched, `git diff` would return 0, and the guard would pass
+      # green while verifying nothing.
+      - name: Re-dump schema v1
+        run: dart run drift_dev schema dump lib/data/database/database.dart drift_schemas/
+
+      - name: Verify schema dump is current
+        run: git diff --exit-code drift_schemas/
+
       - name: Analyze
         run: flutter analyze
 

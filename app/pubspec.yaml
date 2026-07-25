@@ -34,7 +34,16 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  drift: ^2.34.2
+  # Pinned exactly, not `^2.34.2`. drift 2.34.1 renamed `allSchemaEntities` to
+  # `schema` on the internal `drift3_preview` GeneratedDatabase, but drift_dev
+  # 2.34.0 still calls the old name in `services/schema/verifier_common.dart`.
+  # Any drift > 2.34.0 therefore fails to compile drift_dev, which breaks
+  # `drift_dev schema dump`, `schema generate` and `SchemaVerifier` — i.e. the
+  # whole migration harness. The fix landed in drift_dev 2.34.1+1, which
+  # requires analyzer 13 / meta >=1.18, and Flutter 3.41.4 pins meta 1.17.0.
+  # So drift 2.34.0 + drift_dev 2.34.0 is the only working pair on this SDK.
+  # Revisit when the Flutter SDK ships meta >=1.18.3.
+  drift: 2.34.0
   drift_flutter: ^0.3.1
   flutter_riverpod: ^3.3.2
   uuid: ^4.6.0
